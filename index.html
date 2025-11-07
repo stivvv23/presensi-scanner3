@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Scanner Presensi Siswa</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif; padding:12px; max-width:720px; margin:auto;}
+  #reader { width:100%; max-width:480px; margin:auto; }
+  #preview { display:block; margin:10px auto; width:100%; max-width:480px; border-radius:8px; }
+  .row{display:flex; gap:8px; align-items:center; margin:8px 0;}
+  input, button, textarea{padding:8px; border-radius:8px; font-size:14px;}
+  button{cursor:pointer;}
+</style>
+</head>
+<body>
+<h2>📸 Presensi QR (Foto + Lokasi)</h2>
+
+<div id="reader"></div>
+
+<div class="row">
+  <button id="startCamBtn">Mulai Kamera Foto</button>
+  <button id="stopCamBtn" disabled>Stop Kamera</button>
+</div>
+
+<video id="preview" autoplay playsinline></video>
+<br/>
+<input type="text" id="note" placeholder="Catatan tambahan (opsional)" style="width:100%" />
+<br/><br/>
+<button id="sendBtn" disabled>Kirim Presensi (Scan dulu QR)</button>
+
+<script>
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz51Aj5-cQ4tTofJz2UQIZAw26yYvIGW2elID_B1C6dJqlbRSW4dQ1d-PAsTagCVug04Q/exec"; // <<--- ganti sini
+let lastScanned = "";
+let localStream = null;
+let capturedDataUrl = null;
+
+// INISIALISASI QR Scanner
+const html5QrCode = new Html5Qrcode("reader");
+html5QrCode.start(
+  { facingMode: "environment" },
+  { fps: 10, qrbox: 250 },
+  qrCodeMessage => {
+    // isi saat QR terbaca
+    lastScanned = qrCodeMessage;
+    alert("QR terbaca: " + lastScanned);
+    document.getElementById("sendBtn").disabled = false;
+  },
+  errorMessage => {
+    // console.log("QR scan error:", errorMessage);
+  }
+).catch(err => {
+  console.error("Start scanner error:", err);
+});
+
+// CAMERA PREVIEW untuk foto
+const videoEl = document.getElementById("preview");
+document.getElementById("startCamBtn").addEventListener("click", async () => {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+    videoEl.srcObject = localStream;
+    document.getElementById("startCamBtn").disabled = true;
+    document.getElementById("stopCamBtn").disabled = false;
+  } catch (err) {
+    alert("Gagal akses kamera: " + err.message);
+  }
+});
+document.getElementById("stopCamBtn").addEventListener("click", () => {
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+    videoEl.srcObject = null;
+    document.getElementById("startCamBtn").disabled = false;
+    document.getElementById("stopCamBtn").disabled = true;
+  }
+});
+
+// Ambil foto (frame) dari video, dikirim sebagai base64
+async function capturePhoto() {
+  if (!localStream) return null;
+  const videoTrackSettings = localStream.getVideoTracks()[0].getSettings();
+  const w = videoTrackSettings.width || 640;
+  const h = videoTrackSettings.height || 480;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  // compress menjadi jpeg dengan kualitas 0.7
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+  return dataUrl;
+}
+
+// Tombol Kirim
+document.getElementById("sendBtn").addEventListener("click", async () => {
+  if (!lastScanned) return alert("Scan QR terlebih dahulu.");
+  // ambil lokasi
+  const catatan = document.getElementById("note").value || "";
+  let lokasi = "-";
+  try {
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
+    });
+    lokasi = position.coords.latitude + "," + position.coords.longitude;
+  } catch (err) {
+    console.warn("Lokasi tidak tersedia:", err.message);
+    lokasi = "-";
+  }
+
+  // ambil foto (jika kamera aktif)
+  let foto = null;
+  try {
+    foto = await capturePhoto();
+  } catch (err) {
+    console.warn("Gagal capture foto:", err);
+  }
+
+  // waktu client (ISO)
+  const waktuClient = new Date().toISOString();
+
+  // siapkan payload
+  const payload = {
+    nama: lastScanned,
+    lokasi: lokasi,
+    catatan: catatan,
+    foto: foto, // base64 dataURL
+    waktuClient: waktuClient
+  };
+
+  // kirim ke Apps Script
+  try {
+    const resp = await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const j = await resp.json();
+    if (j.ok) {
+      alert("Presensi terkirim sukses!");
+      // reset
+      document.getElementById("sendBtn").disabled = true;
+      lastScanned = "";
+      document.getElementById("note").value = "";
+    } else {
+      alert("Gagal kirim: " + (j.error || JSON.stringify(j)));
+    }
+  } catch (err) {
+    alert("Error kirim: " + err.message);
+  }
+});
+<button onclick="startCamera()">Mulai Kamera</button>
+</script>
+</body>
+</html>
